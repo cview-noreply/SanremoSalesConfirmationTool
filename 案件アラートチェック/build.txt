@@ -1,3 +1,0 @@
-コンソールで以下を実行
-
-pyinstaller --onefile --noconsole --icon=icon.ico check_alert.py
