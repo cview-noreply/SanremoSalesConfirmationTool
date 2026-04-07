@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+'''
 Project: サンレモ成約捕捉
 File: create_sendlist.py
 Description: 
@@ -12,7 +12,7 @@ Description:
 
 Copyright (c) 2026 SCSK ServiceWare Corporation.
 All rights reserved.
-"""
+'''
 
 import pandas as pd
 import xlwings as xw
@@ -26,20 +26,27 @@ from utils import (
     # 設定値
     set_config,
     # 独自エラー
-    AppError, ZeroDataError, NotSelectError, ReferencePathError, NoSheetError,
+    AppError, ZeroDataError, NotSelectError, ReferencePathError, NoSheetError, PICError,
     # 共通関数
     get_pw, select_folder, select_file, search_file, selectfile_to_df, serial_filepath, sanitize_filename, get_base_dir,
-    create_name, create_filename
+    create_name, create_filename_anken, create_filename,
+    # チェック用クラス
+    ListChecker
 )
+
+
+# エラー無視
+import warnings
+warnings.simplefilter('ignore', UserWarning)
 
 
 # ============================================
 # 各種変数・関数
 # ============================================
 # 日付文字列生成
-YYYYMMDD = datetime.date.today().strftime("%Y%m%d")
-YYYYMM = datetime.date.today().strftime("%Y%m")
-YYMM = datetime.date.today().strftime("%y%m")
+YYYYMMDD = datetime.date.today().strftime('%Y%m%d')
+YYYYMM = datetime.date.today().strftime('%Y%m')
+YYMM = datetime.date.today().strftime('%y%m')
 
 
 BASE_DIR = get_base_dir()
@@ -49,7 +56,8 @@ config = set_config()
 # フォルダーの作成
 # ============================================
 ROOT_FOLDER = Path(config['ルートフォルダ'])
-BASE_FOLDER = ROOT_FOLDER / '03_メール送付・引き取り'
+BASE_FOLDER = ROOT_FOLDER / '10_メール送付・引き取り'
+
 
 def make_folders(folders_list:list):
     for folder in folders_list:
@@ -64,10 +72,11 @@ def make_folders(folders_list:list):
     # 2. 強制的にフォーカスを当てる
     root.focus_force()
 
-    messagebox.showinfo("確認", "フォルダを作成しました。\n対象ファイルを格納してください。")
+    messagebox.showinfo('確認', 'フォルダを作成しました。\n対象ファイルを格納してください。')
 
     # 使い終わったら破棄
     root.destroy()
+
 
 
 # ==================================================================================================
@@ -76,26 +85,39 @@ def make_folders(folders_list:list):
 def create_aks_bulk():
 
     # 作業フォルダ作成
-    BASE_FOLDER_SEC = BASE_FOLDER / f'案件管理シート一括送付用'
+    BASE_FOLDER_SEC = BASE_FOLDER / f'01_案件管理シート送付'
     WORKING_FOLDER = BASE_FOLDER_SEC / YYYYMMDD
     INPUT_FOLDER = WORKING_FOLDER / 'インプットデータ'
+    WCHECK_FOLDER = WORKING_FOLDER / 'Wチェック用'
+    INT_FOLDER = WORKING_FOLDER / '中間成果物フォルダ'
 
     
     # CSV格納の猶予与える
     if not WORKING_FOLDER.exists():
-        make_folders([WORKING_FOLDER, INPUT_FOLDER])
-        print("フォルダを作成しました. CSVを格納後、再度処理を実行してください")
+        make_folders([WORKING_FOLDER, INPUT_FOLDER, WCHECK_FOLDER, INT_FOLDER])
+        print('フォルダを作成しました. CSVを格納後、再度処理を実行してください')
         return
 
 
     # ファイルの取得
-    send_df = selectfile_to_df("案件管理シート送付先リスト.csv", INPUT_FOLDER)
-    person_df = selectfile_to_df("案件管理担当者リスト.csv", INPUT_FOLDER)
-    target_df = selectfile_to_df("案件管理シート送付対象クライアント一覧.xlsx", INPUT_FOLDER)
+    send_df = selectfile_to_df('案件管理シート送付先リスト.csv', INPUT_FOLDER)
+    person_df = selectfile_to_df('案件管理担当者リスト.csv', INPUT_FOLDER)
+    target_df = selectfile_to_df('案件管理シート送付対象クライアント一覧.xlsx', INPUT_FOLDER)
+    
+    # 全角スペースを置換
+    send_df = send_df.replace('　', ' ', regex=True)
+    person_df = person_df.replace('　', ' ', regex=True)
+    target_df = target_df.replace('　', ' ', regex=True)
+    
+
+    # --- 0. 担当者のフラグ確認 ---
+    if not (person_df['担当業務[案件管理]'] == '1').all():
+        print(' ⚠️ 担当業務[案件管理]にフラグが立っていない箇所があります')
+        return
 
     # --- 1. 結合 --- 
     merged_df1 = pd.merge(
-        send_df[['振分先コード', '案件管理主体の振分先コード', '企業名', '振分先名']], 
+        send_df[['振分先コード', '案件管理主体の振分先コーxド', '企業名', '振分先名']], 
         person_df[['振分先コード', '担当者部署', '担当者氏名', '担当者メールアドレス']], 
         left_on='案件管理主体の振分先コード', 
         right_on='振分先コード', 
@@ -107,9 +129,9 @@ def create_aks_bulk():
     merged_df1 = merged_df1.drop(columns=['案件管理主体の振分先コード', '振分先コード_y'])
     
     # 出力
-    base_name = f"{YYYYMMDD}_送付先リストx担当者リスト"
-    save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
-    merged_df1.to_csv(save_filepath, index=False, encoding="CP932")
+    base_name = f'{YYYYMMDD}_送付先リストx担当者リスト'
+    save_filepath = serial_filepath(INT_FOLDER, base_name,'.csv')
+    merged_df1.to_csv(save_filepath, index=False, encoding='CP932')
 
 
     # --- 2. 結合 --- 
@@ -121,32 +143,37 @@ def create_aks_bulk():
         how='inner'
     )
 
-
     # --- 3. 整形 --- 
-    def create_name_format(row):
-        kigyo = row['企業名']
-        furi = row['振分先名']
-        busho = row['担当者部署']
-        shimei = row['担当者氏名']
-        mail = row['担当者メールアドレス']
-        
-        # 振分先名がある場合だけカッコを付ける
-        furi_part = f" ({furi}分)" if furi != "" else ""
-        
-        # 全体を組み立てる
-        return f"{kigyo}{furi_part} {busho} {shimei} <{mail}>"
-
     # 新しいデータフレームを作成
     output_df = pd.DataFrame()
-    output_df['名前'] = merged_df2.apply(create_name_format, axis=1)
+    output_df['名前'] = merged_df2.apply(
+        lambda row: create_filename(
+            kigyo_nm=row['企業名'],
+            furi_nm=row['振分先名'],
+            busho=row['担当者部署'],
+            shimei=row['担当者氏名'],
+            mailaddress=row['担当者メールアドレス'],
+        ), 
+        axis=1
+    )
     output_df['ファイル名'] = merged_df2['ファイル名']
 
     # --- 4. 出力 --- 
-    base_name = f"{YYYYMMDD}_案件管理シート宛先取込用"
+    base_name = f'{YYYYMMDD}_案件管理シート宛先取込用'
     save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
-    output_df.to_csv(save_filepath, index=False, header=False, encoding="CP932")
+    output_df.to_csv(save_filepath, index=False, header=False, encoding='CP932')
 
     print(f' >> {str(save_filepath.name)} を作成')
+
+
+    # --- 5. 作成送付リストチェック
+    checker = ListChecker(output_df, merged_df1)
+    save_filepath = serial_filepath(WORKING_FOLDER, "取込用ファイルチェック結果",'.xlsx')
+    checker.check_has_file(save_filepath)
+
+    print(f' >> {save_filepath} を作成')
+
+
 
 # ==================================================================================================
 # 2. 成約確認書・着工証跡引き取り便送付
@@ -155,20 +182,35 @@ def create_doc_pickup():
 
 
     # 作業フォルダ作成
-    BASE_FOLDER_SEC = BASE_FOLDER / f'成約確認書・着工証跡引き取り便送付'
+    BASE_FOLDER_SEC = BASE_FOLDER / f'02_引き取り便送付'
     WORKING_FOLDER = BASE_FOLDER_SEC / YYYYMMDD
     INPUT_FOLDER = WORKING_FOLDER / 'インプットデータ'
+    INT_FOLDER = WORKING_FOLDER / '中間成果物フォルダ'
     
     # CSV格納の猶予与える
     if not WORKING_FOLDER.exists():
-        make_folders([WORKING_FOLDER, INPUT_FOLDER])
-        print("フォルダを作成しました. CSVを格納後、再度処理を実行してください")
+        make_folders([WORKING_FOLDER, INPUT_FOLDER, INT_FOLDER])
+        print('フォルダを作成しました. CSVを格納後、再度処理を実行してください')
         return
 
     # ファイルの取得
-    send_df = selectfile_to_df("引き取り便送付先リスト.csv", INPUT_FOLDER)
-    seiyaku_df = selectfile_to_df("成約報告担当者リスト.csv", INPUT_FOLDER)
-    chakko_df = selectfile_to_df("着工証跡担当者リスト.csv", INPUT_FOLDER)
+    send_df = selectfile_to_df('引き取り便送付先リスト.csv', INPUT_FOLDER)
+    seiyaku_df = selectfile_to_df('成約報告担当者リスト.csv', INPUT_FOLDER)
+    chakko_df = selectfile_to_df('着工報告担当者リスト.csv', INPUT_FOLDER)
+
+    # 全角スペースを置換
+    send_df = send_df.replace('　', ' ', regex=True)
+    seiyaku_df = seiyaku_df.replace('　', ' ', regex=True)
+    chakko_df = chakko_df.replace('　', ' ', regex=True)
+
+    # --- 0. 担当者のフラグ確認 ---
+    if not (seiyaku_df['担当業務[成約報告]'] == '1').all():
+        print(' ⚠️ 担当業務[成約報告]にフラグが立っていない箇所があります')
+        return
+    
+    if not (chakko_df['担当業務[着工報告]'] == '1').all():
+        print(' ⚠️ 担当業務[着工報告]にフラグが立っていない箇所があります')
+        return
 
 
     # --- 1. 結合 ---
@@ -184,9 +226,9 @@ def create_doc_pickup():
     merged_df1 = merged_df1.drop(columns=['成約報告主体の振分先コード', '振分先コード_y'])
 
     # 出力
-    base_name = f"{YYYYMMDD}_送付先リストx成約担当者リスト"
-    save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
-    merged_df1.to_csv(save_filepath, index=False, encoding="CP932")
+    base_name = f'{YYYYMMDD}_送付先リストx成約担当者リスト'
+    save_filepath = serial_filepath(INT_FOLDER, base_name,'.csv')
+    merged_df1.to_csv(save_filepath, index=False, encoding='CP932')
 
 
     # --- 2. 結合 --- 
@@ -202,9 +244,9 @@ def create_doc_pickup():
     merged_df2 = merged_df2.drop(columns=['着工報告主体の振分先コード', '振分先コード_y'])
 
     # 出力
-    base_name = f"{YYYYMMDD}_送付先リストx着工担当者リスト"
-    save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
-    merged_df2.to_csv(save_filepath, index=False, encoding="CP932")
+    base_name = f'{YYYYMMDD}_送付先リストx着工担当者リスト'
+    save_filepath = serial_filepath(INT_FOLDER, base_name,'.csv')
+    merged_df2.to_csv(save_filepath, index=False, encoding='CP932')
 
 
     # --- 3. 縦結合 --- 
@@ -214,31 +256,28 @@ def create_doc_pickup():
     combined_df = combined_df.drop_duplicates()
 
     # 出力
-    base_name = f"{YYYYMMDD}_送付先リストx担当者リスト"
-    save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
-    combined_df.to_csv(save_filepath, index=False, encoding="CP932")
+    base_name = f'{YYYYMMDD}_送付先リストx担当者リスト'
+    save_filepath = serial_filepath(INT_FOLDER, base_name,'.csv')
+    combined_df.to_csv(save_filepath, index=False, encoding='CP932')
 
     #  --- 4. 整形 --- 
-    def create_name_format(row):
-        kigyo = row['企業名']
-        furi = row['振分先名']
-        busho = row['担当者部署']
-        shimei = row['担当者氏名']
-        
-        # 振分先名がある場合だけカッコを付ける
-        furi_part = f" ({furi}分)" if furi != "" else ""
-        
-        # 全体を組み立てる
-        return f"{kigyo}{furi_part} {busho} {shimei}"
-
     # 新しいデータフレームを作成
     output_df = pd.DataFrame()
-    output_df['名前'] = combined_df.apply(create_name_format, axis=1)
+    output_df['名前'] = combined_df.apply(
+        lambda row: create_filename(
+            kigyo_nm=row['企業名'],
+            furi_nm=row['振分先名'],
+            busho=row['担当者部署'],
+            shimei=row['担当者氏名'],
+            mailaddress=None,
+        ), 
+        axis=1
+    )
     output_df['メールアドレス'] = combined_df['担当者メールアドレス']
     output_df['グループ'] = f'{YYMM}_引き取り便'
-    output_df['コメント'] = ""
-    output_df['属性1'] = ""
-    output_df['属性2'] = ""
+    output_df['コメント'] = ''
+    output_df['属性1'] = ''
+    output_df['属性2'] = ''
 
     # 並び替え
     cols = ['グループ', '名前', 'メールアドレス', 'コメント', '属性1', '属性2']
@@ -246,7 +285,7 @@ def create_doc_pickup():
 
     # --- 5. 出力 (1000件ごとに分割) --- 
     chunk_size = 1000
-    base_name_template = f"{YYYYMMDD}_引き取り便アドレス帳取込用"
+    base_name_template = f'{YYYYMMDD}_引き取り便アドレス帳取込用'
 
     # 全件数がchunk_size(1000)を超えるかどうかでループ
     for i, start_idx in enumerate(range(0, len(output_df), chunk_size)):
@@ -254,14 +293,22 @@ def create_doc_pickup():
         
         # 複数ファイルになる場合はファイル名に連番(_1, _2...)を付与
         if len(output_df) > chunk_size:
-            base_name = f"{base_name_template}({i+1})"
+            base_name = f'{base_name_template}({i+1})'
         else:
             base_name = base_name_template
             
         save_filepath = serial_filepath(WORKING_FOLDER, base_name, '.csv')
-        chunk.to_csv(save_filepath, index=False, encoding="CP932")
+        chunk.to_csv(save_filepath, index=False, encoding='CP932')
 
         print(f' >> {str(save_filepath.name)} を作成 ({len(chunk)}件)')
+
+
+    # --- 6. 作成送付リストチェック
+    checker = ListChecker(output_df, combined_df)
+    save_filepath = serial_filepath(WORKING_FOLDER, "取込用ファイルチェック結果",'.xlsx')
+    checker.check_no_file(save_filepath)
+
+    print(f' >> {save_filepath} を作成')
 
 
 # ==================================================================================================
@@ -270,52 +317,52 @@ def create_doc_pickup():
 def create_doc_pickup_indv():
 
     # 作業フォルダ作成
-    BASE_FOLDER_SEC = BASE_FOLDER / f'個別着工証跡引き取り便送付'
+    BASE_FOLDER_SEC = BASE_FOLDER / f'03_引き取り便送付(個別着工報告先)'
     WORKING_FOLDER = BASE_FOLDER_SEC / YYYYMMDD
     INPUT_FOLDER = WORKING_FOLDER / 'インプットデータ'
     FILES_FOLDER = WORKING_FOLDER / '着工報告ご依頼ファイル'
+    WCHECK_FOLDER = WORKING_FOLDER / 'Wチェック用'
+    INT_FOLDER = WORKING_FOLDER / '中間成果物フォルダ'
+
 
     # CSV格納の猶予与える
     if not WORKING_FOLDER.exists():
-        make_folders([WORKING_FOLDER, INPUT_FOLDER, FILES_FOLDER])
-        print("フォルダを作成しました. CSVを格納後、再度処理を実行してください")
+        make_folders([WORKING_FOLDER, INPUT_FOLDER, FILES_FOLDER, WCHECK_FOLDER, INT_FOLDER])
+        print('フォルダを作成しました. CSVを格納後、再度処理を実行してください')
         return
 
 
     # ファイルの取得
-    person_df = selectfile_to_df("着工報告担当者リスト（特定案件のみ）.csv", INPUT_FOLDER)
+    person_df = selectfile_to_df('着工報告担当者リスト（特定案件のみ）.csv', INPUT_FOLDER)
     person_df = person_df.rename(columns={'着工予定日（成約確認書）　※延期の申告を受けた場合は上書き':'着工予定日'})
+
+    # 全角スペースを置換
+    person_df = person_df.replace('　', ' ', regex=True)
 
     # 着工報告ご依頼のFMT取得
     template_filepath = config['ファイルパス']['着工報告ご依頼FMT']
 
     #  --- 整形 --- 
-    current_month = datetime.datetime.now().strftime("%Y年%m月")
-    def create_name_format(row):
-        kigyo = row['企業名']
-        furi = row['振分先名']
-        busho = row['この案件のみの着工報告担当者部署']
-        shimei = row['この案件のみの着工報告担当者氏名']
-        mail = row['この案件のみの着工報告担当者メールアドレス']
-        
-        # 振分先名がある場合だけカッコを付ける
-        furi_part = f" ({furi}分)" if furi != "" else ""
-        
-        # 全体を組み立てる
-        return f"{kigyo}{furi_part} {busho} {shimei}<{mail}>"
-    
+    # 着工報告ファイル名
+    current_month = datetime.datetime.now().strftime('%Y年%m月')
     def create_filename_format(row):
         irai = row['依頼番号']
         kigyo = row['企業名']
         furi = row['振分先名']
-        # 振分先名がある場合だけカッコを付ける
-        furi_part = f" ({furi}分)" if furi != "" else ""
-        
-        # 全体を組み立てる
-        return f"【SUUMO注文】{current_month}度着工報告ご依頼_{irai}_{kigyo}様{furi_part}.xlsx"
+        kigyo_part = create_name(kigyo, furi)
+        return f'【SUUMO注文】{current_month}度_着工報告ご依頼_{irai}_{kigyo_part}.xlsx'
 
     # person_df自体に列を追加
-    person_df['名前'] = person_df.apply(create_name_format, axis=1)
+    person_df['名前'] = person_df.apply(
+        lambda row: create_filename(
+            kigyo_nm=row['企業名'],
+            furi_nm=row['振分先名'],
+            busho=row['この案件のみの着工報告担当者部署'],
+            shimei=row['この案件のみの着工報告担当者氏名'],
+            mailaddress=row['この案件のみの着工報告担当者メールアドレス'],
+        ), 
+        axis=1
+    )
     person_df['ファイル名'] = person_df.apply(create_filename_format, axis=1)
 
     # --- 出力用データフレームの作成 ---
@@ -324,14 +371,22 @@ def create_doc_pickup_indv():
     output_df['ファイル名'] = person_df['ファイル名']
 
     # 出力
-    base_name = f"{YYYYMMDD}_特定案件の着工報告便宛先取込用"
+    base_name = f'{YYYYMMDD}_特定案件の着工報告便宛先取込用'
     save_filepath = serial_filepath(WORKING_FOLDER, base_name, '.csv')
-    output_df.to_csv(save_filepath, index=False, header=False, encoding="CP932")
+    output_df.to_csv(save_filepath, index=False, header=False, encoding='CP932')
+
     print(f' >> {str(save_filepath.name)} を作成')
-    
-    
+
+    # --- 5. 作成送付リストチェック
+    checker = ListChecker(output_df, person_df)
+    save_filepath = serial_filepath(WORKING_FOLDER, "取込用ファイルチェック結果",'.xlsx')
+    checker.check_kobetsu_file(save_filepath)
+
+    print(f' >> {save_filepath} を作成')
+
+
     # === 着工報告ご依頼ファイルの作成 ===
-    print(" -- 着工報告ご依頼ファイル作成開始 -- ")
+    print(' -- 着工報告ご依頼ファイル作成開始 -- ')
     irai_df = person_df[['依頼番号', '着工予定日', 'ファイル名']]
     file_count = 0
 
@@ -351,15 +406,15 @@ def create_doc_pickup_indv():
             ws = wb.sheets[0]  # 1番左のシートを指定
             
             # 2行目・1列目（A2セル）から値を貼り付け
-            ws.range("A:A").number_format = '@'
-            ws.range("A2").options(index=False, header=False).value = split_df
+            ws.range('A:A').number_format = '@'
+            ws.range('A2').options(index=False, header=False).value = split_df
             
             # 名前をつけて保存
             wb.save(save_path)
             wb.close()
             file_count += 1
     
-    print(f" -- 着工報告ご依頼ファイル作成完了({file_count}件) -- ")
+    print(f' -- 着工報告ご依頼ファイル作成完了({file_count}件) -- ')
 
 
 # ==================================================================================================
@@ -368,21 +423,30 @@ def create_doc_pickup_indv():
 def create_aks_remind():
 
     # 作業フォルダ作成
-    BASE_FOLDER_SEC = BASE_FOLDER / f'案件管理シートリマインド'
+    BASE_FOLDER_SEC = BASE_FOLDER / f'04_案件管理シート未提出PUSH送付'
     WORKING_FOLDER = BASE_FOLDER_SEC / YYYYMMDD
     INPUT_FOLDER = WORKING_FOLDER / 'インプットデータ'
+    INT_FOLDER = WORKING_FOLDER / '中間成果物フォルダ'
 
     # CSV格納の猶予与える
     if not WORKING_FOLDER.exists():
-        make_folders([WORKING_FOLDER, INPUT_FOLDER])
-        print("フォルダを作成しました. CSVを格納後、再度処理を実行してください")
+        make_folders([WORKING_FOLDER, INPUT_FOLDER, INT_FOLDER])
+        print('フォルダを作成しました. CSVを格納後、再度処理を実行してください')
         return
 
     # ファイルの取得
-    send_df = selectfile_to_df("案件管理シート未提出クライアントリスト.csv", INPUT_FOLDER)
-    person_df = selectfile_to_df("案件管理担当者リスト.csv", INPUT_FOLDER)
+    send_df = selectfile_to_df('案件管理シート未提出クライアントリスト.csv', INPUT_FOLDER)
+    person_df = selectfile_to_df('案件管理担当者リスト.csv', INPUT_FOLDER)
 
+    # 全角スペースを置換
+    send_df = send_df.replace('　', ' ', regex=True)
+    person_df = person_df.replace('　', ' ', regex=True)
 
+    # --- 0. 担当者のフラグ確認 ---
+    if not (person_df['担当業務[案件管理]'] == '1').all():
+        print(' ⚠️ 担当業務[案件管理]にフラグが立っていない箇所があります')
+        return
+    
     # --- 1. 結合 ---
     merged_df1 = pd.merge(
         send_df[['振分先コード', '案件管理主体の振分先コード', '企業名', '振分先名']], 
@@ -396,40 +460,37 @@ def create_aks_remind():
     merged_df1 = merged_df1.drop(columns=['案件管理主体の振分先コード', '振分先コード_y'])
 
     # 出力
-    base_name = f"{YYYYMMDD}_未提出クライアントリストx担当者リスト"
-    save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
-    merged_df1.to_csv(save_filepath, index=False, encoding="CP932")
+    base_name = f'{YYYYMMDD}_未提出クライアントリストx担当者リスト'
+    save_filepath = serial_filepath(INT_FOLDER, base_name,'.csv')
+    merged_df1.to_csv(save_filepath, index=False, encoding='CP932')
 
 
     #  --- 2 整形 --- 
-    def create_name_format(row):
-        kigyo = row['企業名']
-        furi = row['振分先名']
-        busho = row['担当者部署']
-        shimei = row['担当者氏名']
-        
-        # 振分先名がある場合だけカッコを付ける
-        furi_part = f" ({furi}分)" if furi != "" else ""
-        
-        # 全体を組み立てる
-        return f"{kigyo}{furi_part} {busho} {shimei}"
-
     # 新しいデータフレームを作成
     output_df = pd.DataFrame()
-    output_df['名前'] = merged_df1.apply(create_name_format, axis=1)
+    output_df['名前'] = merged_df1.apply(
+        lambda row: create_filename(
+            kigyo_nm=row['企業名'],
+            furi_nm=row['振分先名'],
+            busho=row['担当者部署'],
+            shimei=row['担当者氏名'],
+            mailaddress=None,
+        ), 
+        axis=1
+    )
     output_df['メールアドレス'] = merged_df1['担当者メールアドレス']
     output_df['グループ'] = f'{YYMM}_案件管理シート未提出PUSH'
-    output_df['コメント'] = ""
-    output_df['属性1'] = ""
-    output_df['属性2'] = ""
+    output_df['コメント'] = ''
+    output_df['属性1'] = ''
+    output_df['属性2'] = ''
 
     # 並び替え
     cols = ['グループ', '名前', 'メールアドレス', 'コメント', '属性1', '属性2']
     output_df = output_df[cols]
 
-    # --- 5. 出力 (1000件ごとに分割) --- 
+    # --- 3. 出力 (1000件ごとに分割) --- 
     chunk_size = 1000
-    base_name_template = f"{YYYYMMDD}_案件管理シート未提出PUSHアドレス帳取込用"
+    base_name_template = f'{YYYYMMDD}_案件管理シート未提出PUSHアドレス帳取込用'
 
     # 全件数がchunk_size(1000)を超えるかどうかでループ
     for i, start_idx in enumerate(range(0, len(output_df), chunk_size)):
@@ -437,36 +498,55 @@ def create_aks_remind():
         
         #   (_1, _2...)を付与
         if len(output_df) > chunk_size:
-            base_name = f"{base_name_template}({i+1})"
+            base_name = f'{base_name_template}({i+1})'
         else:
             base_name = base_name_template
             
         save_filepath = serial_filepath(WORKING_FOLDER, base_name, '.csv')
-        chunk.to_csv(save_filepath, index=False, encoding="CP932")
+        chunk.to_csv(save_filepath, index=False, encoding='CP932')
 
         print(f' >> {str(save_filepath.name)} を作成 ({len(chunk)}件)')
+
+
+    # --- 5. 作成送付リストチェック
+    checker = ListChecker(output_df, merged_df1)
+    save_filepath = serial_filepath(WORKING_FOLDER, "取込用ファイルチェック結果",'.xlsx')
+    checker.check_no_file(save_filepath)
+
+    print(f' >> {save_filepath} を作成')
 
 
 
 # ==================================================================================================
 # 5. HONEY管理クライアントへの案件進捗メール一括送付
 # ==================================================================================================
-def create_Honey_progress():
+def create_honey_progress():
 
     # 作業フォルダ作成
-    BASE_FOLDER_SEC = BASE_FOLDER / f'HONEY管理クライアントへの案件進捗メール一括送付'
+    BASE_FOLDER_SEC = BASE_FOLDER / f'05_HONEY案件アラートメール送付'
     WORKING_FOLDER = BASE_FOLDER_SEC / YYYYMMDD
     INPUT_FOLDER = WORKING_FOLDER / 'インプットデータ'
+    INT_FOLDER = WORKING_FOLDER / '中間成果物フォルダ'
+
 
     if not WORKING_FOLDER.exists():
-        make_folders([WORKING_FOLDER, INPUT_FOLDER])
-        print("フォルダを作成しました. CSVを格納後、再度処理を実行してください")
+        make_folders([WORKING_FOLDER, INPUT_FOLDER, INT_FOLDER])
+        print('フォルダを作成しました. CSVを格納後、再度処理を実行してください')
         return
 
     # ファイルの取得
-    send_df = selectfile_to_df("HONEY管理リマインド送付先リスト.csv", INPUT_FOLDER)
-    person_df = selectfile_to_df("案件管理担当者リスト.csv", INPUT_FOLDER)
+    send_df = selectfile_to_df('HONEY管理リマインド送付先リスト.csv', INPUT_FOLDER)
+    person_df = selectfile_to_df('案件管理担当者リスト.csv', INPUT_FOLDER)
+    
+    # 全角スペースを置換
+    send_df = send_df.replace('　', ' ', regex=True)
+    person_df = person_df.replace('　', ' ', regex=True)
 
+    # --- 0. 担当者のフラグ確認 ---
+    if not (person_df['担当業務[案件管理]'] == '1').all():
+        print(' ⚠️ 担当業務[案件管理]にフラグが立っていない箇所があります')
+        return
+    
     # --- 1. 結合 ---
     merged_df1 = pd.merge(
         send_df[['振分先コード', '案件管理主体の振分先コード', '企業名', '振分先名']], 
@@ -480,41 +560,38 @@ def create_Honey_progress():
     merged_df1 = merged_df1.drop(columns=['案件管理主体の振分先コード', '振分先コード_y'])
 
     # 出力
-    base_name = f"{YYYYMMDD}_HONEY管理リマインド送付先リストx担当者リスト"
-    save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
-    merged_df1.to_csv(save_filepath, index=False, encoding="CP932")
+    base_name = f'{YYYYMMDD}_HONEY管理リマインド送付先リストx担当者リスト'
+    save_filepath = serial_filepath(INT_FOLDER, base_name,'.csv')
+    merged_df1.to_csv(save_filepath, index=False, encoding='CP932')
 
 
     #  --- 2 整形 --- 
-    def create_name_format(row):
-        kigyo = row['企業名']
-        furi = row['振分先名']
-        busho = row['担当者部署']
-        shimei = row['担当者氏名']
-        
-        # 振分先名がある場合だけカッコを付ける
-        furi_part = f" ({furi}分)" if furi != "" else ""
-        
-        # 全体を組み立てる
-        return f"{kigyo}{furi_part} {busho} {shimei}"
-
     # 新しいデータフレームを作成
     output_df = pd.DataFrame()
-    output_df['名前'] = merged_df1.apply(create_name_format, axis=1)
+    output_df['名前'] = merged_df1.apply(
+        lambda row: create_filename(
+            kigyo_nm=row['企業名'],
+            furi_nm=row['振分先名'],
+            busho=row['担当者部署'],
+            shimei=row['担当者氏名'],
+            mailaddress=None,
+        ), 
+        axis=1
+    )
     output_df['メールアドレス'] = merged_df1['担当者メールアドレス']
     output_df['グループ'] = f'{YYMM}_HONEY案件進捗'
-    output_df['コメント'] = ""
-    output_df['属性1'] = ""
-    output_df['属性2'] = ""
+    output_df['コメント'] = ''
+    output_df['属性1'] = ''
+    output_df['属性2'] = ''
 
     # 並び替え
     cols = ['グループ', '名前', 'メールアドレス', 'コメント', '属性1', '属性2']
     output_df = output_df[cols]
 
 
-    # --- 5. 出力 (1000件ごとに分割) --- 
+    # --- 3. 出力 (1000件ごとに分割) --- 
     chunk_size = 1000
-    base_name_template = f"{YYYYMMDD}_HONEY案件進捗依頼アドレス帳取込用"
+    base_name_template = f'{YYYYMMDD}_HONEY案件進捗依頼アドレス帳取込用'
 
     # 全件数がchunk_size(1000)を超えるかどうかでループ
     for i, start_idx in enumerate(range(0, len(output_df), chunk_size)):
@@ -522,15 +599,22 @@ def create_Honey_progress():
         
         # 複数ファイルになる場合はファイル名に連番(_1, _2...)を付与
         if len(output_df) > chunk_size:
-            base_name = f"{base_name_template}({i+1})"
+            base_name = f'{base_name_template}({i+1})'
         else:
             base_name = base_name_template
             
         save_filepath = serial_filepath(WORKING_FOLDER, base_name, '.csv')
-        chunk.to_csv(save_filepath, index=False, encoding="CP932")
+        chunk.to_csv(save_filepath, index=False, encoding='CP932')
 
         print(f' >> {str(save_filepath.name)} を作成 ({len(chunk)}件)')
 
+
+    # --- 6. 作成送付リストチェック
+    checker = ListChecker(output_df, merged_df1)
+    save_filepath = serial_filepath(WORKING_FOLDER, "取込用ファイルチェック結果",'.xlsx')
+    checker.check_no_file(save_filepath)
+
+    print(f' >> {save_filepath} を作成')
 
 # ==================================================================================================
 # 6. 案件アラートファイル一括送付
@@ -538,24 +622,46 @@ def create_Honey_progress():
 def create_aa_bulk():
 
     # 作業フォルダ作成
-    BASE_FOLDER_SEC = BASE_FOLDER / f'案件アラートファイル一括送付'
+    BASE_FOLDER_SEC = BASE_FOLDER / f'06_案件アラート表送付'
     WORKING_FOLDER = BASE_FOLDER_SEC / YYYYMMDD
     INPUT_FOLDER = WORKING_FOLDER / 'インプットデータ'
+    WCHECK_FOLDER = WORKING_FOLDER / 'Wチェック用'
+    INT_FOLDER = WORKING_FOLDER / '中間成果物フォルダ'
+
 
     if not WORKING_FOLDER.exists():
-        make_folders([WORKING_FOLDER, INPUT_FOLDER])
-        print("フォルダを作成しました. CSVを格納後、再度処理を実行してください")
+        make_folders([WORKING_FOLDER, INPUT_FOLDER, WCHECK_FOLDER, INT_FOLDER])
+        print('フォルダを作成しました. CSVを格納後、再度処理を実行してください')
         return
 
 
     # ファイルの取得
-    send_df = selectfile_to_df("案件アラート送付先リスト.csv", INPUT_FOLDER)
-    person_df = selectfile_to_df("案件管理担当者リスト.csv", INPUT_FOLDER)
-    seiyaku_df = selectfile_to_df("成約報告担当者リスト.csv", INPUT_FOLDER)
-    chakko_df = selectfile_to_df("着工証跡担当者リスト.csv", INPUT_FOLDER)
-    target_df = selectfile_to_df("案件アラート送付対象クライアント一覧.xlsx", INPUT_FOLDER)
+    send_df = selectfile_to_df('案件アラート送付先リスト.csv', INPUT_FOLDER)
+    person_df = selectfile_to_df('案件管理担当者リスト.csv', INPUT_FOLDER)
+    seiyaku_df = selectfile_to_df('成約報告担当者リスト.csv', INPUT_FOLDER)
+    chakko_df = selectfile_to_df('着工報告担当者リスト.csv', INPUT_FOLDER)
+    target_df = selectfile_to_df('案件アラート送付対象クライアント一覧.xlsx', INPUT_FOLDER)
 
+    # 全角スペースを置換
+    send_df = send_df.replace('　', ' ', regex=True)
+    person_df = person_df.replace('　', ' ', regex=True)
+    seiyaku_df = seiyaku_df.replace('　', ' ', regex=True)
+    chakko_df = chakko_df.replace('　', ' ', regex=True)
+    target_df = target_df.replace('　', ' ', regex=True)
 
+    # --- 0. 担当者のフラグ確認 ---
+    if not (person_df['担当業務[案件管理]'] == '1').all():
+        print(' ⚠️ 担当業務[案件管理]にフラグが立っていない箇所があります')
+        return
+    
+    if not (seiyaku_df['担当業務[成約報告]'] == '1').all():
+        print(' ⚠️ 担当業務[成約報告]にフラグが立っていない箇所があります')
+        return
+    
+    if not (chakko_df['担当業務[着工報告]'] == '1').all():
+        print(' ⚠️ 担当業務[着工報告]にフラグが立っていない箇所があります')
+        return
+    
 
     # --- 1. 案件管理結合 ---
     merged_df1 = pd.merge(
@@ -570,9 +676,9 @@ def create_aa_bulk():
     merged_df1 = merged_df1.drop(columns=['案件管理主体の振分先コード', '振分先コード_y'])
 
     # 出力
-    base_name = f"{YYYYMMDD}_送付先リストx案件管理担当者リスト"
-    save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
-    merged_df1.to_csv(save_filepath, index=False, encoding="CP932")
+    base_name = f'{YYYYMMDD}_送付先リストx案件管理担当者リスト'
+    save_filepath = serial_filepath(INT_FOLDER, base_name,'.csv')
+    merged_df1.to_csv(save_filepath, index=False, encoding='CP932')
 
 
     # --- 2. 成約報告結合 ---
@@ -588,9 +694,9 @@ def create_aa_bulk():
     merged_df2 = merged_df2.drop(columns=['成約報告主体の振分先コード', '振分先コード_y'])
 
     # 出力
-    base_name = f"{YYYYMMDD}_送付先リストx成約担当者リスト"
-    save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
-    merged_df2.to_csv(save_filepath, index=False, encoding="CP932")
+    base_name = f'{YYYYMMDD}_送付先リストx成約担当者リスト'
+    save_filepath = serial_filepath(INT_FOLDER, base_name,'.csv')
+    merged_df2.to_csv(save_filepath, index=False, encoding='CP932')
 
 
     # --- 3. 着工証跡結合 --- 
@@ -606,9 +712,9 @@ def create_aa_bulk():
     merged_df3 = merged_df3.drop(columns=['着工報告主体の振分先コード', '振分先コード_y'])
 
     # 出力
-    base_name = f"{YYYYMMDD}_送付先リストx着工担当者リスト"
-    save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
-    merged_df3.to_csv(save_filepath, index=False, encoding="CP932")
+    base_name = f'{YYYYMMDD}_送付先リストx着工担当者リスト'
+    save_filepath = serial_filepath(INT_FOLDER, base_name,'.csv')
+    merged_df3.to_csv(save_filepath, index=False, encoding='CP932')
 
 
     # --- 4. 縦結合 --- 
@@ -627,51 +733,40 @@ def create_aa_bulk():
     )
 
     # 出力
-    base_name = f"{YYYYMMDD}_送付先リストx全担当者リスト_ファイル名"
-    save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
+    base_name = f'{YYYYMMDD}_送付先リストx全担当者リスト_ファイル名'
+    save_filepath = serial_filepath(INT_FOLDER, base_name,'.csv')
     merged_df4 = merged_df4.replace('\u200b', '', regex=True)
-    merged_df4.to_csv(save_filepath, index=False, encoding="CP932")
+    merged_df4.to_csv(save_filepath, index=False, encoding='CP932')
 
 
-    # --- 6. 整形 --- 
-    def create_name_format(row):
-        kigyo = row['企業名']
-        furi = row['振分先名']
-        busho = row['担当者部署']
-        shimei = row['担当者氏名']
-        mail = row['担当者メールアドレス']
-        
-        # 振分先名がある場合だけカッコを付ける
-        furi_part = f" ({furi}分)" if furi != "" else ""
-        
-        # 全体を組み立てる
-        return f"{kigyo}{furi_part} {busho} {shimei} <{mail}>"
-
-    # 新しいデータフレームを作成
+    # --- 6. 整形 ---     # 新しいデータフレームを作成
     output_df = pd.DataFrame()
-    output_df['名前'] = merged_df4.apply(create_name_format, axis=1)
+    output_df['名前'] = merged_df4.apply(
+        lambda row: create_filename(
+            kigyo_nm=row['企業名'],
+            furi_nm=row['振分先名'],
+            busho=row['担当者部署'],
+            shimei=row['担当者氏名'],
+            mailaddress=row['担当者メールアドレス'],
+        ), 
+        axis=1
+    )
     output_df['ファイル名'] = merged_df4['ファイル名']
 
 
-    # --- 5. 出力 (1000件ごとに分割) --- 
-    chunk_size = 1000
-    base_name_template = f"{YYYYMMDD}_案件アラート宛先取込用"
+    # --- 5. 出力  --- 
+    base_name = f'{YYYYMMDD}_案件アラート宛先取込用'
+    save_filepath = serial_filepath(WORKING_FOLDER, base_name,'.csv')
+    output_df.to_csv(save_filepath, index=False, header=False, encoding='CP932')
 
-    # 全件数がchunk_size(1000)を超えるかどうかでループ
-    for i, start_idx in enumerate(range(0, len(output_df), chunk_size)):
-        chunk = output_df[start_idx : start_idx + chunk_size]
-        
-        # 複数ファイルになる場合はファイル名に連番(_1, _2...)を付与
-        if len(output_df) > chunk_size:
-            base_name = f"{base_name_template}({i+1})"
-        else:
-            base_name = base_name_template
-            
-        save_filepath = serial_filepath(WORKING_FOLDER, base_name, '.csv')
-        chunk.to_csv(save_filepath, index=False, encoding="CP932")
+    print(f' >> {str(save_filepath.name)} を作成')
 
-        print(f' >> {str(save_filepath.name)} を作成 ({len(chunk)}件)')
+    # --- 6. 作成送付リストチェック
+    checker = ListChecker(output_df, merged_df4)
+    save_filepath = serial_filepath(WORKING_FOLDER, "取込用ファイルチェック結果",'.xlsx')
+    checker.check_has_file(save_filepath)
 
+    print(f' >> {save_filepath} を作成')
 
 
 if __name__ == '__main__':
@@ -702,7 +797,7 @@ if __name__ == '__main__':
 
         # # ==== HONEY管理クライアントへの案件進捗メール一括送付 ====
         # print(f'[{datetime.datetime.now() :%Y-%m-%d %H:%M:%S}] HONEY管理クライアントへの案件進捗メール一括送付リスト作成開始')
-        # create_Honey_progress()
+        # create_honey_progress()
         # print(f'[{datetime.datetime.now() :%Y-%m-%d %H:%M:%S}] HONEY管理クライアントへの案件進捗メール一括送付リスト作成終了')
 
 
@@ -719,6 +814,5 @@ if __name__ == '__main__':
     except Exception as e:
         err_name = type(e).__name__
         err_msg = str(e)
-        print(f"\n⚠️ エラーが発生しました \nエラー名: {err_name}\n詳細: {err_msg}")
-        import traceback
+        print(f'\n⚠️ エラーが発生しました \nエラー名: {err_name}\n詳細: {err_msg}')
         traceback.print_exc()

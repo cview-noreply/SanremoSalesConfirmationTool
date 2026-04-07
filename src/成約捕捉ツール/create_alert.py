@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Project: サンレモ成約捕捉
-File: creat_alert.py
+File: create_alert.py
 Description: 
     1. 案件アラートの作成
     2. 作成した案件アラートのチェック(check_sheets.py のチェックルールを援用)、チェック結果の作成
@@ -31,13 +31,18 @@ from utils import (
     AppError, ZeroDataError, NotSelectError, ReferencePathError, NoSheetError,
     # 共通関数
     get_pw, select_folder, select_file, search_file, selectfile_to_df, serial_filepath, sanitize_filename, get_base_dir,
-    create_name, create_filename, create_filename_alert, exist_folders
+    create_name, create_filename_anken, create_filename_alert, exist_folders
 )
 
 
+# エラー無視
+import warnings
+warnings.simplefilter('ignore', UserWarning)
+
+
 # ==== 日付文字列生成 ====
-YYYYMMDD = datetime.date.today().strftime("%Y%m%d")
-YYYYMM = datetime.date.today().strftime("%Y%m")
+YYYYMMDD = datetime.date.today().strftime('%Y%m%d')
+YYYYMM = datetime.date.today().strftime('%Y%m')
 
 # ==== 外部参照 ====
 config = set_config()
@@ -70,7 +75,7 @@ class AlertChecker:
     def get_info(self):
         """企業情報の取得"""
         # 振分先コード取得
-        digit_matches = re.findall(r"\d{11}", self.file_name) # 11桁の数字
+        digit_matches = re.findall(r'\d{11}', self.file_name) # 11桁の数字
 
         if digit_matches:
             self.furiwakesaki_code = digit_matches[0]
@@ -81,7 +86,7 @@ class AlertChecker:
 
         else:
             # ファイル名から企業名と振分先を取得
-            pattern = r"案件アラート_(.+?)様(?:（(.+?)分）)?"
+            pattern = r'案件アラート_(.+?)様(?:\((.+?)分\))?'
             match = re.search(pattern, self.file_name)
             if not match: return 'NameErr'
 
@@ -108,7 +113,7 @@ class AlertChecker:
 
         # pw開封してdf, wb/wsをそれぞれ取得
         try:
-            with open(self.file_path, "rb") as f:
+            with open(self.file_path, 'rb') as f:
                 office_file = OfficeFile(f)
                 decrypted_data = io.BytesIO()
                 office_file.load_key(password=self.pw)
@@ -126,10 +131,10 @@ class AlertChecker:
             return 'OpenErr' # エクセルが開けない or DF.WBオブジェクトが作成できない
         
         # 企業名、振分先名、対象月の取得
-        pattern = r"^([^（]+)(?:（(.+)分）)?$"
-        match = re.search(pattern, self.ws['D3'].value or "")
+        pattern = r'^(.+?)様(?:\((.+?)分\))?$'
+        match = re.search(pattern, self.ws['D3'].value or '')
         if not match: return 'NameErr' # 企業名が取得できない
-        self.kigyo_name = match.group(1).rstrip("様")
+        self.kigyo_name = match.group(1).rstrip('様')
         self.furiwakesaki_name = match.group(2) or '' # なければNone
 
         # 件数、最終行
@@ -140,28 +145,34 @@ class AlertChecker:
     # --- ファイル名 ---
     def check_filename(self): 
         """ファイル名が正しい"""
-        correct = create_filename_alert(
-            self.furiwakesaki_code,
-            self.kigyo_name,
-            self.furiwakesaki_name
-        )
-        return self.file_name == correct
+        try:
+            correct = create_filename_alert(
+                self.furiwakesaki_code,
+                self.kigyo_name,
+                self.furiwakesaki_name
+            )
+            return self.file_name == correct
+        except Exception:
+            return False
 
     
     def check_input_range(self):
         """B6以下、Q6以下、最終行以降に値が入力されていない"""
-        all_start_idx = column_index_from_string(config['案件アラート']['全体範囲'].split(':')[0])
-        all_end_idx = column_index_from_string(config['案件アラート']['全体範囲'].split(':')[1])
+        try:
+            all_start_idx = column_index_from_string(config['案件アラート']['全体範囲'].split(':')[0])
+            all_end_idx = column_index_from_string(config['案件アラート']['全体範囲'].split(':')[1])
 
-        left_cell = self.ws.cell(6, all_start_idx - 1).value
-        right_cell = self.ws.cell(6, all_end_idx + 1).value
-        under_cells = [self.ws.cell(self.last_row + 1, col).value for col in range(all_start_idx, all_end_idx + 1)]
+            left_cell = self.ws.cell(6, all_start_idx - 1).value
+            right_cell = self.ws.cell(6, all_end_idx + 1).value
+            under_cells = [self.ws.cell(self.last_row + 1, col).value for col in range(all_start_idx, all_end_idx + 1)]
 
-        return all([
-            left_cell is None or left_cell == '',
-            right_cell is None or right_cell == '',
-            all([val is None or val == '' for val in under_cells])
-        ])
+            return all([
+                left_cell is None or left_cell == '',
+                right_cell is None or right_cell == '',
+                all([val is None or val == '' for val in under_cells])
+            ])
+        except Exception:
+            return False
 
 
 # ============================================
@@ -169,7 +180,7 @@ class AlertChecker:
 # ============================================
 
 ROOT_FOLDER = Path(config['ルートフォルダ'])
-BASE_FOLDER = ROOT_FOLDER / '23_案件アラート表作成送付'
+BASE_FOLDER = ROOT_FOLDER / '13_案件アラート表作成送付'
 WORKING_FOLDER = BASE_FOLDER / YYYYMMDD
 CSV_FOLDER = WORKING_FOLDER / '01_CSV'
 SHEETS_FOLDER = WORKING_FOLDER / '02_作成済み案件アラート'
@@ -314,7 +325,7 @@ def create_sheets():
 
 
             # データ貼り付け
-            ws.range("E:E").number_format = '@'
+            ws.range('E:E').number_format = '@'
             ws.range('C6').options(index=False, header=False).value = df
 
 
@@ -371,7 +382,7 @@ def check_sheets_at_creation():
     target_folder = selected_working_folder / '02_作成済み案件アラート'
     result_folder = selected_working_folder / '99_処理結果'
 
-    target_files = [f for f in target_folder.glob("*.xlsx") if not f.name.startswith('~$')]
+    target_files = [f for f in target_folder.glob('*.xlsx') if not f.name.startswith('~$')]
     target_files_len = len(target_files)
 
     if target_files_len == 0:
@@ -391,9 +402,9 @@ def check_sheets_at_creation():
         res = checker.get_info()
 
         report = {
-            '振分先コード': checker.furiwakesaki_code or "",
-            '企業名': checker.kigyo_name or "",
-            '振分先名': checker.furiwakesaki_name or "",
+            '振分先コード': checker.furiwakesaki_code or '',
+            '企業名': checker.kigyo_name or '',
+            '振分先名': checker.furiwakesaki_name or '',
             'ファイル名': str(file.name),
             'トータルの不備結果': '',
             'PWチェック': '',
@@ -465,7 +476,7 @@ def check_sheets_at_creation():
     template_filepath = Path(config['ファイルパス']['案件アラートチェック結果FMT'])
 
     # 保存(すでにある場合はリネームして新規で作成)
-    base_name = f"{YYYYMMDD}_案件アラート表不備チェック結果"
+    base_name = f'{YYYYMMDD}_案件アラート表不備チェック結果'
     save_filepath = serial_filepath(result_folder, base_name, '.xlsx')
     shutil.copy(template_filepath, save_filepath)
 
@@ -474,10 +485,24 @@ def check_sheets_at_creation():
     with xw.App(visible=False) as app:
         wb = xw.Book((save_filepath))
         ws = wb.sheets[0]  # 1番左のシートを指定
-
-        
-        ws.range("A:A").number_format = '@'
+        ws.range('A:A').number_format = '@'
         ws.range('A10').options(index=False, header=False).value = result_df
+
+        # 行と列のインデックスでループしNGセルに色を付ける
+        rows, cols = result_df.shape
+        data_area = ws.range('A10').resize(rows, cols)
+        filter_area = ws.range('A9').resize(rows + 1, cols)
+        all_values = data_area.options(ndim=2).value
+
+        for r, row_values in enumerate(all_values):
+            for c, val in enumerate(row_values):
+                if val == 'NG':
+                    # 起点(A10)から相対的な位置を指定して色を塗る
+                    data_area[r, c].color = (255, 255, 0)
+        
+        # フィルタ
+        ws.api.AutoFilterMode = False 
+        filter_area.api.AutoFilter(Field=1)
 
         ws.range('C3').value = 'OK' if count_dict_len == target_files_len else 'NG'
         ws.range('C4').value = str(target_files_len)
@@ -501,7 +526,6 @@ def make_send_list():
     title = f'案件アラート表不備チェック結果.xlsxを選択してください'
     print(title)
     result_filepath = select_file(title=title, file_types=[('EXCELファイル', '*.xlsx')], initial_dir=BASE_FOLDER)
-    result_folder = result_filepath.parent
 
     print(f' << {result_filepath} を取得')
         
@@ -517,7 +541,7 @@ def make_send_list():
     template_filepath = config['ファイルパス']['送付対象クライアント一覧FMT']
 
     # 保存ファイル名(すでにある場合はリネームして新規で作成)
-    base_name = f"{YYYYMMDD}_案件アラート送付対象クライアント一覧"
+    base_name = f'{YYYYMMDD}_案件アラート送付対象クライアント一覧'
     save_filepath = serial_filepath(RESULT_FOLDER, base_name, '.xlsx')
     shutil.copy(template_filepath, save_filepath)
 
@@ -526,8 +550,8 @@ def make_send_list():
         wb = xw.Book((save_filepath))
         ws = wb.sheets[0]  # 1番左のシートを指定
         
-        ws.range("A:D").number_format = '@'
-        ws.range("A2").options(index=False, header=False).value = ok_df
+        ws.range('A:D').number_format = '@'
+        ws.range('A2').options(index=False, header=False).value = ok_df
         
         # 保存
         wb.save()
@@ -568,4 +592,4 @@ if __name__ == '__main__':
         err_name = type(e).__name__
         err_msg = str(e)
         err_detail = traceback.format_exc()
-        print(f"\n⚠️ エラーが発生しました \nエラー名: {err_name}\n詳細: {err_msg}\n{err_detail}")
+        print(f'\n⚠️ エラーが発生しました \nエラー名: {err_name}\n詳細: {err_msg}\n{err_detail}')

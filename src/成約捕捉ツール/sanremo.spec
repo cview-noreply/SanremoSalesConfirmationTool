@@ -13,7 +13,9 @@ a = Analysis(
     ['app.py'],
     pathex=['.'],
     binaries=[],
-    datas=[],
+    datas=[
+        ('icon.ico', '.'),
+    ],
     hiddenimports=[
         'tkinter',
         'tkinter.filedialog',
