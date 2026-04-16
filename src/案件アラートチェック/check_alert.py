@@ -97,7 +97,7 @@ def check_alert_():
 
     # ★高速化: よく使う日付境界値を事前計算
     today_minus_30  = today - pd.Timedelta(days=30)
-    today_plus_7    = today + pd.Timedelta(days=7)
+    today_plus_7    = today + pd.Timedelta(days=6)
     today_minus_70  = today - pd.Timedelta(days=70)
     month_start     = today.replace(day=1)
     prev_month_start = month_start - pd.DateOffset(months=1)
@@ -178,7 +178,7 @@ def check_alert_():
     df['区分_17b'] = df['ご商談状況_not契約済み']   & df['初回来場日_null'] & df['お客様来場聞き取り日_notnull'] & df['成約確認書初回提出日_null'] & df['着工確認書初回提出日_null']
 
     df['区分_18'] = df['ご商談状況_来場済み'] & df['初回来場日_null'] & df['成約確認書初回提出日_null'] & df['着工確認書初回提出日_null']
-    df['区分_19'] = df['お客様成約聞き取り日_notnull'] & df['成約聞き取り経路_架電'] & df['契約予定日_null'] & df['成約確認書初回提出日_null'] & df['着工確認書初回提出日_null']
+    df['区分_19'] = df['お客様成約聞き取り日_notnull'] & df['成約聞き取り経路_架電'] & df['成約確認書初回提出日_null'] & df['着工確認書初回提出日_null']
 
     df['区分_20a'] = df['反響種別_来場'] & df['資料請求日_30日前'] & df['ご商談状況_資料送付済み']  & df['成約確認書初回提出日_null'] & df['着工確認書初回提出日_null']
     df['区分_20b'] = df['反響種別_来場'] & df['資料請求日_30日前'] & df['初回来場日_null'] & df['ご商談状況_not契約済み'] & df['成約確認書初回提出日_null'] & df['着工確認書初回提出日_null']
