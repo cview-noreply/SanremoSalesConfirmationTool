@@ -139,9 +139,9 @@ def create_filename_anken(code, kigyo_nm, furi_nm=None):
     return f'【SUUMO注文】{term}度_案件管理シート_{code}_{name}.xlsx'
 
 def create_filename_alert(code, kigyo_nm, furi_nm=None):
-    """【SUUMO注文】20260402_(確認用)案件アラート_01234567890_かもめ工務店様(A支店分)"""
+    """【SUUMO注文】20260402_(確認用)お知らせ_01234567890_かもめ工務店様(A支店分)"""
     name = create_name(kigyo_nm, furi_nm)
-    return f'【SUUMO注文】{YYYYMMDD}_(確認用)案件アラート_{code}_{name}.xlsx'
+    return f'【SUUMO注文】{YYYYMMDD}_(確認用)お知らせ_{code}_{name}.xlsx'
 
 # 送付用リストのファイル名の作成
 def create_filename(kigyo_nm:str=None, furi_nm:str=None, busho:str=None, shimei:str=None, mailaddress:str=None):
