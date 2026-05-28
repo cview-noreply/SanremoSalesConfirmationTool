@@ -1,26 +1,14 @@
 @echo off
-rem chcp 65001
+rem chcp 65001 #本ファイルはShift JISで開く
 setlocal
 
 set SRC=%~dp0成約捕捉ツール
 set DST=C:\成約捕捉ツール
 
-if exist "%DST%" (
-    echo 既存フォルダを削除中...
-    rd /s /q "%DST%"
-    
-    rem 削除できたか確認
-    if exist "%DST%" (
-        echo 既存フォルダの削除に失敗しました
-        pause
-        exit /b 1
-    )
-)
-
-echo フォルダをコピー中...
-robocopy "%SRC%" "%DST%" /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP
+echo フォルダを同期中...
+robocopy "%SRC%" "%DST%" /E /XO /MT:8 /R:1 /W:1 /FFT /NFL /NDL /NJH /NJS /NP
 if errorlevel 8 (
-    echo コピーに失敗しました
+    echo 同期に失敗しました
     pause
     exit /b 1
 )
@@ -34,4 +22,5 @@ if not exist "%DST%\サンレモ成約捕捉ツール.exe" (
 echo ツールを起動します...
 start "" /d "%DST%" "%DST%\サンレモ成約捕捉ツール.exe"
 
+timeout /t 3 /nobreak >nul
 exit /b
