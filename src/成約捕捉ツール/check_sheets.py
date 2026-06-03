@@ -35,16 +35,22 @@ from utils import (
     AppError, ZeroDataError, NotSelectError, ReferencePathError, NoSheetError,
     # 共通関数
     get_pw, select_folder, select_file, search_file, selectfile_to_df, serial_filepath, sanitize_filename, get_base_dir,
-    create_name, create_filename, exist_folders
+    create_name, create_filename_anken, exist_folders, create_filename,
+    # チェック用クラス
+    ListChecker
 )
+
+# エラー無視
+import warnings
+warnings.simplefilter('ignore', UserWarning)
 
 # ============================================
 # 各種変数・関数
 # ============================================
 
 # 日付文字列生成
-YYYYMMDD = datetime.date.today().strftime("%Y%m%d")
-YYYYMM = datetime.date.today().strftime("%Y%m")
+YYYYMMDD = datetime.date.today().strftime('%Y%m%d')
+YYYYMM = datetime.date.today().strftime('%Y%m')
 
 # ==== 外部参照 ====
 config = set_config()
@@ -54,10 +60,11 @@ config = set_config()
 # フォルダーの作成
 # ============================================
 ROOT_FOLDER = Path(config['ルートフォルダ'])
-BASE_FOLDER = ROOT_FOLDER / '04_案件管理シート受理・取込み' 
+BASE_FOLDER = ROOT_FOLDER / '12_案件管理シート受理・取込' 
 STORE_FOLDER = BASE_FOLDER / '■チェック前案件管理シート格納'
 WORKING_FOLDER = BASE_FOLDER / YYYYMMDD
 CSV_FOLDER = WORKING_FOLDER / '01_CSV'
+CSV_BK_FOLDER = CSV_FOLDER / 'バックアップ'
 PROCESSED_FOLDER = WORKING_FOLDER / '02_チェック済み案件管理シート'
 RESULT_FOLDER = WORKING_FOLDER / '99_処理結果'
 
@@ -66,6 +73,7 @@ def make_folders():
     STORE_FOLDER.mkdir(parents=True, exist_ok=True)
     WORKING_FOLDER.mkdir(parents=True, exist_ok=True)
     CSV_FOLDER.mkdir(exist_ok=True)
+    CSV_BK_FOLDER.mkdir(exist_ok=True)
     PROCESSED_FOLDER.mkdir(exist_ok=True)
     RESULT_FOLDER.mkdir(exist_ok=True)
 
@@ -109,7 +117,7 @@ class SheetChecker:
     def get_info(self):
         """企業情報の取得"""
         # 振分先コード取得
-        digit_matches = re.findall(r"\d{11}", self.file_name) # 11桁の数字
+        digit_matches = re.findall(r'\d{11}', self.file_name) # 11桁の数字
         if not digit_matches: return 'CodeErr' # 振分先コードが取得できない
         self.furiwakesaki_code = digit_matches[0]
         
@@ -119,7 +127,7 @@ class SheetChecker:
 
         # pw開封してdf, wb/wsをそれぞれ取得
         try:
-            with open(self.file_path, "rb") as f:
+            with open(self.file_path, 'rb') as f:
                 office_file = OfficeFile(f)
                 decrypted_data = io.BytesIO()
                 office_file.load_key(password=self.pw)
@@ -128,10 +136,10 @@ class SheetChecker:
 
                 try:
                     # dfの取得
-                    # self.df = pd.read_excel(io.BytesIO(buf), dtype=str, usecols=self.all_cols, header=6, skiprows=[7]).fillna('')
-                    self.df = pd.read_excel(io.BytesIO(buf), dtype=str, header=6, skiprows=[7]).fillna('')
+                    self.df = pd.read_excel(io.BytesIO(buf), sheet_name=self.sheet_name, dtype=str, header=6, skiprows=[7]).fillna('')
                     self.df = self.df.iloc[:, 1:] # 2列目以降指定
                     self.df = self.df.map(lambda x: x.strip() if isinstance(x, str) else x) # データクレンジング
+                    self.df = self.df[self.df.astype(str).ne('').any(axis=1)]
 
                 except Exception as e:
                     print(e)
@@ -150,14 +158,14 @@ class SheetChecker:
             return 'OpenErr' # エクセルが開けない or DF.WBオブジェクトが作成できない
         
         
-        # 企業名、振分先名、対象月の取得
-        self.target_date = self.ws['B1'].value
-        if not self.target_date: return 'DateErr' # 対象月が存在しない
+        # 対象月の取得 
+        self.target_date = self.ws['B1'].value or ''
 
-        pattern = r"^([^（]+)(?:（(.+)分）)?$"
-        match = re.search(pattern, self.ws['D3'].value or "")
+        # 企業名、振分先名の取得
+        pattern = r'^(.+?)様(?:\((.+?)分\))?$'
+        match = re.search(pattern, self.ws['D3'].value or '')
         if not match: return 'NameErr' # 企業名が取得できない
-        self.kigyo_name = match.group(1).rstrip("様")
+        self.kigyo_name = match.group(1)
         self.furiwakesaki_name = match.group(2) or '' # なければNone
 
         # 件数、最終行
@@ -169,7 +177,7 @@ class SheetChecker:
     def check_filename(self): 
         """ファイル名が正しい"""
         try:
-            correct = create_filename(
+            correct = create_filename_anken(
                 self.furiwakesaki_code,
                 self.kigyo_name,
                 self.furiwakesaki_name
@@ -229,7 +237,6 @@ class SheetChecker:
             return bool(self.df.loc[self.df[col_name] != '', col_name].isin(status_list).all()) # np.true_ 対策
         except Exception as e:
             return False 
-            
 
     def check_is_date(self, col_name='日付'):
         """日付列が有効な日付型"""
@@ -239,18 +246,17 @@ class SheetChecker:
         except Exception as e:
             return False 
             
-    def check_is_num(self, col_name='重複\n※更新先の依頼番号を入力'):
+    def check_is_num(self, col_name='⑥重複\n※更新先の依頼番号を入力'):
         """値が数値文字列"""
         try:
             target = self.df.loc[self.df[col_name] != '', col_name]
             return bool(target.str.isdigit().all()) # np.true_ 対策
         except Exception as e:
             return False 
-            
-
+        
     def detect_garbled_text(self, text):
         """[関数] 文字化け検知"""
-        if text == "": return False
+        if text == '': return False
 
         # 1. 不明な文字への置換（致命的な欠落）
         # システムが解釈不能で '?' や '' (U+FFFD) になったもの
@@ -336,7 +342,9 @@ class SheetChecker:
                 all([val is None or val == '' for val in under_cells])
             ])
         except Exception as e:
-            return False 
+            return False
+        
+    
         
 # ============================================
 # 結果に応じてファイルを格納
@@ -361,15 +369,15 @@ def check_sheets_on_receipt():
     result = []
 
     # 格納フォルダから案件管理シートのパスを取得
-    files = [f for f in STORE_FOLDER.glob("*.xlsx") if not f.name.startswith('~$')]
+    files = [f for f in STORE_FOLDER.glob('*.xlsx') if not f.name.startswith('~$')]
     if len(files) == 0: 
         raise ZeroDataError(f'案件管理シートが格納されていません')
     
     
     # 送付先リストを取得 -> R営業担当者氏名、Rクラサポ担当者氏名
-    send_df = selectfile_to_df("案件管理シート送付先リスト.csv", CSV_FOLDER)
+    send_df = selectfile_to_df('案件管理シート送付先リスト.csv', CSV_FOLDER)
 
-    ok_count = 0
+    checked_count  = 0
     ng_count = 0
     ok_file_count = 0
     ng_file_count = 0
@@ -384,9 +392,9 @@ def check_sheets_on_receipt():
         res = checker.get_info()
 
         report = {
-            '振分先コード': checker.furiwakesaki_code or "",
-            '企業名': checker.kigyo_name or "",
-            '振分先名': checker.furiwakesaki_name or "",
+            '振分先コード': checker.furiwakesaki_code or '',
+            '企業名': checker.kigyo_name or '',
+            '振分先名': checker.furiwakesaki_name or '',
             'R営業担当者氏名': '',
             'Rクラサポ担当者氏名': '',
             'トータルの不備チェック結果': '',
@@ -427,19 +435,19 @@ def check_sheets_on_receipt():
             case 'OpenErr':
                 report['トータルの不備チェック結果'] = 'NG'
                 result.append(report)
-                print(f' ⚠︎ ファイルを開けません')
+                print(f' ⚠︎ PWでファイルを開けません')
                 ng_count += 1
                 continue
             case 'DataFrameErr':
                 report['トータルの不備チェック結果'] = 'NG'
                 result.append(report)
-                print(f' ⚠︎ シート内の情報を取得できません')
+                print(f' ⚠︎ シート内の情報を取得できません(df)')
                 ng_count += 1
                 continue
             case 'OpenpyxlErr':
                 report['トータルの不備チェック結果'] = 'NG'
                 result.append(report)
-                print(f' ⚠︎ シート内の情報を取得できません')
+                print(f' ⚠︎ シート内の情報を取得できません(op)')
                 ng_count += 1
                 continue
             case 'NameErr':
@@ -491,18 +499,18 @@ def check_sheets_on_receipt():
 
         # メッセージの数に応じて text, text2 に振り分け
         # 最初の5つまで
-        report['不備内容(不備あり時)1'] = " / ".join(error_texts[:5]) if error_texts else ""
+        report['不備内容(不備あり時)1'] = ' / '.join(error_texts[:5]) if error_texts else ''
 
         # 6つ目以降がある場合
         if len(error_texts) >= 6:
-            report['不備内容(不備あり時)2'] = " / ".join(error_texts[5:])
+            report['不備内容(不備あり時)2'] = ' / '.join(error_texts[5:])
         else:
-            report['不備内容(不備あり時)2'] = ""
+            report['不備内容(不備あり時)2'] = ''
 
         result.append(report)
         print(' ✔  完了')
         
-        ok_count += 1
+        checked_count  += 1
 
 
         # ファイル移動
@@ -514,7 +522,7 @@ def check_sheets_on_receipt():
             ng_file_count += 1
 
 
-    print(f' ✅ チェック完了: {ok_count} | チェック不可: {ng_count} | 合計: {len(files)}')
+    print(f' ✅ チェック完了: {checked_count} | チェック不可: {ng_count} | 合計: {len(files)}')
 
     # 結果を出力
     result_df = pd.DataFrame(result)
@@ -524,7 +532,7 @@ def check_sheets_on_receipt():
     template_filepath = Path(config['ファイルパス']['受理不備チェック結果FMT'])
 
     # 保存ファイル名(すでにある場合はリネームして新規で作成)
-    base_name = f"{YYYYMMDD}_案件管理シート受理不備チェック結果"
+    base_name = f'{YYYYMMDD}_案件管理シート受理不備チェック結果'
     save_filepath = serial_filepath(RESULT_FOLDER, base_name, '.xlsx')
     shutil.copy(template_filepath, save_filepath)
 
@@ -534,12 +542,28 @@ def check_sheets_on_receipt():
     with xw.App(visible=False) as app:
         wb = xw.Book((save_filepath))
         ws = wb.sheets[0]  # 1番左のシートを指定
-        ws.range("A:A").number_format = '@'
+        ws.range('A:A').number_format = '@'
         ws.range('A9').options(index=False, header=False).value = result_df
+
+        # 行と列のインデックスでループしNGセルに色を付ける
+        rows, cols = result_df.shape
+        data_area = ws.range('A9').resize(rows, cols)
+        filter_area = ws.range('A8').resize(rows + 1, cols)
+        all_values = data_area.options(ndim=2).value
+
+        for r, row_values in enumerate(all_values):
+            for c, val in enumerate(row_values):
+                if val == 'NG':
+                    # 起点(A9)から相対的な位置を指定して色を塗る
+                    data_area[r, c].color = (255, 255, 0)
+        
+        # フィルタ
+        ws.api.AutoFilterMode = False 
+        filter_area.api.AutoFilter(Field=1)
 
         ws.range('C3').value = len(files)
         ws.range('C4').value = ok_file_count
-        ws.range('C5').value = ng_file_count
+        ws.range('C5').value = ng_file_count + ng_count
         
         # 保存
         wb.save()
@@ -566,12 +590,12 @@ def create_receive_jisseki():
     result_dict = result_df.set_index('振分先コード').to_dict(orient='index')
 
     # csvファイルの取得
-    sojushin_df = selectfile_to_df("案件管理シート送受信実績一覧.csv", CSV_FOLDER).fillna('')
+    sojushin_df = selectfile_to_df('案件管理シート送受信実績一覧.csv', CSV_FOLDER).fillna('')
     group = sojushin_df.groupby('振分先コード')
 
     # 日付データの整形
-    sojushin_df['案件管理シート送信実施日'] = pd.to_datetime(sojushin_df['案件管理シート送信実施日']).dt.strftime('%Y/%m/%d')
-    sojushin_df['案件管理シート回収日'] = pd.to_datetime(sojushin_df['案件管理シート回収日']).dt.strftime('%Y/%m/%d')
+    sojushin_df['案件管理シート送信実施日'] = pd.to_datetime(sojushin_df['案件管理シート送信実施日'], errors='coerce').dt.strftime('%Y/%m/%d')
+    sojushin_df['案件管理シート回収日'] = pd.to_datetime(sojushin_df['案件管理シート回収日'], errors='coerce').dt.strftime('%Y/%m/%d')
     
     # 今日の日付
     today_str = datetime.date.today().strftime('%Y/%m/%d')
@@ -589,7 +613,7 @@ def create_receive_jisseki():
         is_ok = row.get('トータルの不備チェック結果') == 'OK'
         hubi1 = row.get('不備内容(不備あり時)1', '')
         hubi2 = row.get('不備内容(不備あり時)2', '')
-        hubi_text = f"{hubi1}/{hubi2}" if hubi2 else hubi1
+        hubi_text = f'{hubi1}/{hubi2}' if hubi2 else hubi1
 
         temp_df = df.copy()
         
@@ -611,7 +635,7 @@ def create_receive_jisseki():
         # 最後にコードと日付で並び替え
         output_df = output_df.sort_values(by=['振分先コード', '案件管理シート送信実施日'])
         
-        base_name = f'{YYYYMMDD}_案件管理シート回収実績取込'
+        base_name = f'{YYYYMMDD}_案件管理シート回収実績取込用'
         save_filepath = serial_filepath(result_folder, base_name, '.csv')
         
         #
@@ -619,7 +643,7 @@ def create_receive_jisseki():
         print(f' >> {save_filepath.name} を作成しました')
 
     else:
-        print(f' 案件管理シート回収実績取込.csv を作成できませんでした')
+        print(f' 案件管理シート回収実績取込用.csv を作成できませんでした')
 
 
 # ============================================
@@ -635,8 +659,17 @@ def create_mail_list():
 
     result_df = pd.read_excel(result_filepath, engine='openpyxl', skiprows=7, usecols='A:R', dtype=str).fillna('')
 
-    send_df = selectfile_to_df("案件管理シート送付先リスト.csv", BASE_FOLDER)
-    person_df = selectfile_to_df("案件管理担当者リスト.csv", BASE_FOLDER)
+    send_df = selectfile_to_df('案件管理シート送付先リスト.csv', BASE_FOLDER)
+    person_df = selectfile_to_df('案件管理担当者リスト.csv', BASE_FOLDER)
+    
+    # 全角スペースを置換
+    send_df = send_df.replace('　', ' ', regex=True)
+    person_df = person_df.replace('　', ' ', regex=True)
+
+    # --- 0. 担当者のフラグ確認 ---
+    if not (person_df['担当業務[案件管理]'] == '1').all():
+        print(' ⚠️ 担当業務[案件管理]にフラグが立っていない箇所があります')
+        return
 
     # --- 1. 結合 --- 
     merged_df1 = pd.merge(
@@ -651,16 +684,16 @@ def create_mail_list():
     merged_df1 = merged_df1.drop(columns=['案件管理主体の振分先コード', '振分先コード_y'])
 
     # 出力
-    base_name = f"{YYYYMMDD}_案件管理シート全送付先リスト"
+    base_name = f'{YYYYMMDD}_案件管理シート全送付先リスト'
     save_filepath = next(
         path for i in count()
-        if not (path := result_folder / (f"{base_name}_{i}.csv" if i > 0 else f"{base_name}.csv")).exists()
+        if not (path := result_folder / (f'{base_name}_{i}.csv' if i > 0 else f'{base_name}.csv')).exists()
     )
-    merged_df1.to_csv(save_filepath, index=False, encoding="CP932")
+    merged_df1.to_csv(save_filepath, index=False, encoding='CP932')
 
 
     # OKの宛先リスト
-    ok_df = result_df[result_df["トータルの不備チェック結果"] == "OK"]
+    ok_df = result_df[result_df['トータルの不備チェック結果'] == 'OK']
     if len(ok_df) > 0:
         merged_df_ok = pd.merge(
             merged_df1, 
@@ -671,40 +704,57 @@ def create_mail_list():
         )
 
         #  --- 4. 整形 --- 
-        def create_name_format(row):
-            kigyo = row['企業名']
-            furi = row['振分先名']
-            busho = row['担当者部署']
-            shimei = row['担当者氏名']
-            
-            # 振分先名がある場合だけカッコを付ける
-            furi_part = f" ({furi}分)" if furi != "" else ""
-            
-            # 全体を組み立てる
-            return f"{kigyo}{furi_part} {busho} {shimei}"
-
         # 新しいデータフレームを作成
         output_df = pd.DataFrame()
-        output_df['名前'] = merged_df_ok.apply(create_name_format, axis=1)
-        output_df['メールアドレス'] = merged_df_ok['担当者メールアドレス']
+        output_df['名前'] = merged_df_ok.apply(
+            lambda row: create_filename(
+                kigyo_nm=row['企業名'],
+                furi_nm=row['振分先名'],
+                busho=row['担当者部署'],
+                shimei=row['担当者氏名'],
+                mailaddress=None,
+            ), 
+            axis=1
+        )
+        output_df['メールアドレス'] = merged_df_ok['担当者メールアドレス'].values
         output_df['グループ'] = f'{YYYYMMDD}_案件管理シート受理完了'
-        output_df['コメント'] = ""
-        output_df['属性1'] = ""
-        output_df['属性2'] = ""
+        output_df['コメント'] = ''
+        output_df['属性1'] = ''
+        output_df['属性2'] = ''
 
         # 並び替え
         cols = ['グループ', '名前', 'メールアドレス', 'コメント', '属性1', '属性2']
         output_df = output_df[cols]
 
+        # --- 5. 出力 (1000件ごとに分割) --- 
+        chunk_size = 1000
+        base_name_template = f'{YYYYMMDD}_案件管理シート受領完了メール宛先リスト'
 
-        #  --- 5. 出力 --- 
-        base_name = f"{YYYYMMDD}_案件管理シート受領完了メール宛先リスト"
-        save_filepath = serial_filepath(result_folder, base_name, '.csv')
-        output_df.to_csv(save_filepath, index=False, encoding="CP932")
+        # 全件数がchunk_size(1000)を超えるかどうかでループ
+        for i, start_idx in enumerate(range(0, len(output_df), chunk_size)):
+            chunk = output_df[start_idx : start_idx + chunk_size]
+            
+            # 複数ファイルになる場合はファイル名に連番(_1, _2...)を付与
+            if len(output_df) > chunk_size:
+                base_name = f'{base_name_template}({i+1})'
+            else:
+                base_name = base_name_template
+                
+            save_filepath = serial_filepath(result_folder, base_name, '.csv')
+            chunk.to_csv(save_filepath, index=False, encoding='CP932')
 
-        print(f' >> {str(save_filepath)} を作成')
+            print(f' >> {str(save_filepath.name)} を作成 ({len(chunk)}件)')
 
-    ng_df = result_df[result_df["トータルの不備チェック結果"] == "NG"]
+
+        # --- 6. 作成送付リストチェック
+        checker = ListChecker(output_df, merged_df_ok)
+        save_filepath = serial_filepath(result_folder, "取込用ファイルチェック結果_受領完了",'.xlsx')
+        checker.check_no_file(save_filepath)
+
+        print(f' >> {save_filepath} を作成')
+
+    # NGの宛先リスト
+    ng_df = result_df[result_df['トータルの不備チェック結果'] == 'NG']
     if len(ng_df) > 0:
         merged_df_ng = pd.merge(
             merged_df1, 
@@ -713,39 +763,56 @@ def create_mail_list():
             right_on='振分先コード', 
             how='inner'
         )
+
         #  --- 4. 整形 --- 
-        def create_name_format(row):
-            kigyo = row['企業名']
-            furi = row['振分先名']
-            busho = row['担当者部署']
-            shimei = row['担当者氏名']
-            
-            # 振分先名がある場合だけカッコを付ける
-            furi_part = f" ({furi}分)" if furi != "" else ""
-            
-            # 全体を組み立てる
-            return f"{kigyo}{furi_part} {busho} {shimei}"
-        
         # 新しいデータフレームを作成
         output_df = pd.DataFrame()
-        output_df['名前'] = merged_df_ng.apply(create_name_format, axis=1)
-        output_df['メールアドレス'] = merged_df_ng['担当者メールアドレス']
+        output_df['名前'] = merged_df_ng.apply(
+            lambda row: create_filename(
+                kigyo_nm=row['企業名'],
+                furi_nm=row['振分先名'],
+                busho=row['担当者部署'],
+                shimei=row['担当者氏名'],
+                mailaddress=None,
+            ), 
+            axis=1
+        )
+        output_df['メールアドレス'] = merged_df_ng['担当者メールアドレス'].values
         output_df['グループ'] = f'{YYYYMMDD}_案件管理シート不備差戻'
-        output_df['コメント'] = ""
-        output_df['属性1'] = merged_df_ng['不備内容(不備あり時)1']
-        output_df['属性2'] = merged_df_ng['不備内容(不備あり時)2']
+        output_df['コメント'] = ''
+        output_df['属性1'] = merged_df_ng['不備内容(不備あり時)1'].values
+        output_df['属性2'] = merged_df_ng['不備内容(不備あり時)2'].values
+        
         # 並び替え
         cols = ['グループ', '名前', 'メールアドレス', 'コメント', '属性1', '属性2']
         output_df = output_df[cols]
 
+        # --- 5. 出力 (1000件ごとに分割) --- 
+        chunk_size = 1000
+        base_name_template = f'{YYYYMMDD}_案件管理シート不備差戻メール宛先リスト'
 
-        #  --- 5. 出力 --- 
-        base_name = f"{YYYYMMDD}_案件管理シート不備差戻メール宛先リスト"
-        save_filepath = serial_filepath(result_folder, base_name, '.csv')
-        output_df.to_csv(save_filepath, index=False, encoding="CP932")
+        # 全件数がchunk_size(1000)を超えるかどうかでループ
+        for i, start_idx in enumerate(range(0, len(output_df), chunk_size)):
+            chunk = output_df[start_idx : start_idx + chunk_size]
+            
+            # 複数ファイルになる場合はファイル名に連番(_1, _2...)を付与
+            if len(output_df) > chunk_size:
+                base_name = f'{base_name_template}({i+1})'
+            else:
+                base_name = base_name_template
+                
+            save_filepath = serial_filepath(result_folder, base_name, '.csv')
+            chunk.to_csv(save_filepath, index=False, encoding='CP932')
+
+            print(f' >> {str(save_filepath.name)} を作成 ({len(chunk)}件)')
 
 
-        print(f' >> {str(save_filepath)} を作成')
+        # --- 6. 作成送付リストチェック
+        checker = ListChecker(output_df, merged_df_ng)
+        save_filepath = serial_filepath(result_folder, "取込用ファイルチェック結果_不備差戻",'.xlsx')
+        checker.check_no_file(save_filepath)
+
+        print(f' >> {save_filepath} を作成')
 
 
 # ============================================
@@ -762,7 +829,7 @@ def create_input_data_hankyo():
     result_folder = working_filepath / '99_処理結果'
     complete_folder = processed_folder / '不備なし'
 
-    files =  [f for f in complete_folder.glob("*.xlsx") if not f.name.startswith('~$')]
+    files =  [f for f in complete_folder.glob('*.xlsx') if not f.name.startswith('~$')]
     if not files: raise FileNotFoundError('不備なしの案件管理シートがありません')
     
     concat_dfs = []
@@ -796,9 +863,10 @@ def create_input_data_hankyo():
             
             df = pd.DataFrame(data, columns=None)
             
-            # 整形(空行削除)
+            # 整形(空行削除, 改行削除)
             df = df.replace('', np.nan).dropna(how='all', axis=0).fillna('')
-            
+            df = df.replace('\n', '', regex=True)
+
             # F列(5) と P～V列(15～21) を取得
             selected_df = df.iloc[:, [4, 14, 15, 16, 17, 18, 19]]
             concat_dfs.append(selected_df)
@@ -816,7 +884,7 @@ def create_input_data_hankyo():
 
     # まとめる
     if not concat_dfs:
-        raise ValueError("有効データがありません")
+        raise ValueError('有効データがありません')
     
     output_df = pd.concat(concat_dfs, ignore_index=True)
     output_df.columns = [
@@ -829,23 +897,23 @@ def create_input_data_hankyo():
         '重複　※更新先の依頼番号を入力'
     ]
 
-    output_df['最終更新日（クライアント）'] = pd.to_datetime(output_df['最終更新日（クライアント）']).dt.date
-    output_df['初回来場日'] = pd.to_datetime(output_df['初回来場日']).dt.date
-    output_df['契約予定日'] = pd.to_datetime(output_df['契約予定日']).dt.date
+    output_df['最終更新日（クライアント）'] = pd.to_datetime(output_df['最終更新日（クライアント）'], errors='coerce').dt.date
+    output_df['初回来場日'] = pd.to_datetime(output_df['初回来場日'], errors='coerce').dt.date
+    output_df['契約予定日'] = pd.to_datetime(output_df['契約予定日'], errors='coerce').dt.date
 
     # 出力
-    base_name = f"{YYYYMMDD}_案件管理シート反響管理アプリ反映"
+    base_name = f'{YYYYMMDD}_案件管理シート反響管理アプリ反映'
     save_filepath = serial_filepath(result_folder, base_name, '.csv')
-    output_df.to_csv(save_filepath, index=False, encoding="CP932")
+    output_df.to_csv(save_filepath, index=False, encoding='CP932')
     
-    print(f" >> {save_filepath} を作成")
+    print(f' >> {save_filepath} を作成')
 
 
 # --- 実行例 ---
-if __name__ == "__main__":
+if __name__ == '__main__':
         
     try:
-        # ==== フォルダ作成 ====
+        # # ==== フォルダ作成 ====
         # make_folders()
 
         # # ==== 案件管理シートチェック ====
@@ -880,4 +948,4 @@ if __name__ == "__main__":
         err_name = type(e).__name__
         err_msg = str(e)
         err_detail = traceback.format_exc()
-        print(f"\n⚠️ エラーが発生しました error.log を確認してください\nエラー名: {err_name}\n詳細: {err_msg}\n{err_detail}")
+        print(f'\n⚠️ エラーが発生しました \nエラー名: {err_name}\n詳細: {err_msg}\n{err_detail}')

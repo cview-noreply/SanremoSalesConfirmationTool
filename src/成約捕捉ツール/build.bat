@@ -1,4 +1,4 @@
-﻿@echo off
+@echo off
 chcp 65001 >nul
 setlocal
 
@@ -30,8 +30,11 @@ echo.
 echo [INFO] ビルド開始... [cite: 3]
 echo.
 
+set BASE_DIR=%~dp0
+set SPEC_FILE=%BASE_DIR%sanremo.spec
+
 REM specファイルを使用してビルド
-pyinstaller sanremo.spec --clean
+pyinstaller "%SPEC_FILE%" --clean
 
 if %errorlevel% neq 0 (
     echo.

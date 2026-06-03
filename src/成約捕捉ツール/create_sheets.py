@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Project: サンレモ成約捕捉
-File: creat_sheets.py
+File: create_sheets.py
 Description: 
     1. 作業フォルダの作成
     2. 案件管理シートの作成
@@ -29,13 +29,21 @@ from utils import (
     AppError, ZeroDataError, NotSelectError, ReferencePathError, NoSheetError,
     # 共通関数
     get_pw, select_folder, select_file, search_file, selectfile_to_df, serial_filepath, sanitize_filename, get_base_dir,
-    create_name, create_filename, exist_folders
+    create_name, create_filename_anken, exist_folders
 )
+
+# COMリソース解放用
+import gc
+import pythoncom
+
+# エラー無視
+import warnings
+warnings.simplefilter('ignore', UserWarning)
 
 
 # ==== 日付文字列生成 ====
-YYYYMMDD = datetime.date.today().strftime("%Y%m%d")
-YYYYMM = datetime.date.today().strftime("%Y%m")
+YYYYMMDD = datetime.date.today().strftime('%Y%m%d')
+YYYYMM = datetime.date.today().strftime('%Y%m')
 
 # ==== 外部参照 ====
 config = set_config()
@@ -45,9 +53,10 @@ config = set_config()
 # フォルダーの作成
 # ============================================
 ROOT_FOLDER = Path(config['ルートフォルダ'])
-BASE_FOLDER = ROOT_FOLDER / '02_案件管理シート作成' 
+BASE_FOLDER = ROOT_FOLDER / '11_案件管理シート作成' 
 WORKING_FOLDER = BASE_FOLDER / YYYYMM
 CSV_FOLDER = WORKING_FOLDER / '01_CSV'
+CSV_BK_FOLDER = CSV_FOLDER / 'バックアップ'
 SHEETS_FOLDER = WORKING_FOLDER / '02_作成済み案件管理シート'
 RESULT_FOLDER = WORKING_FOLDER / '99_処理結果'
 
@@ -55,6 +64,7 @@ RESULT_FOLDER = WORKING_FOLDER / '99_処理結果'
 def make_folders():
     WORKING_FOLDER.mkdir(parents=True, exist_ok=True)
     CSV_FOLDER.mkdir(exist_ok=True)
+    CSV_BK_FOLDER.mkdir(exist_ok=True)
     SHEETS_FOLDER.mkdir(exist_ok=True)
     RESULT_FOLDER.mkdir(exist_ok=True)
 
@@ -72,11 +82,16 @@ def create_sheets():
     restart_interval = int(config['xw_RESTART_INTERVAL'])
 
     df = selectfile_to_df('案件管理シート全件リスト.csv', WORKING_FOLDER)
+    df = df.replace('\n', '', regex=True) # 改行削除
+
+
     if len(df) == 0:
         raise ZeroDataError('データが0件です')
 
     group = df.groupby('振分先コード')
-    group_list = list(group)
+    group_list = list(group)  # 件数カウント用に一度だけlist化
+    total = len(group_list)
+    del group_list  # メモリ解放
 
     app = None
     wb = None
@@ -87,6 +102,7 @@ def create_sheets():
         _app = xw.App(visible=False)
         _app.screen_updating = False
         _app.display_alerts = False
+        _app.interactive = False          # ★ ダイアログ・ユーザー操作を完全ブロック
         try:
             _wb = _app.books.open(template_filepath)
             _ws = _wb.sheets[target_sheet_name]
@@ -100,7 +116,7 @@ def create_sheets():
     exist_count = 0
 
     try:
-        for i, (code, group_df) in enumerate(group_list):
+        for i, (code, group_df) in enumerate(df.groupby('振分先コード')):
 
             # ── Excelアプリの起動 or 定期再起動 ──────────────────────────
             # ループの先頭で判断し、wb/ws も同時に取得
@@ -111,6 +127,12 @@ def create_sheets():
                     except Exception:
                         pass
                     app.quit()
+                    # ★ COMリソースを明示解放
+                    wb = None
+                    ws = None
+                    app = None
+                    gc.collect()
+                    pythoncom.CoFreeUnusedLibraries()
 
                 app, wb, ws = _boot_app_and_open_template()
 
@@ -119,7 +141,7 @@ def create_sheets():
             furiwakesaki_nm  = group_df['振分先名'].iloc[0]
             rows             = len(group_df)
 
-            print(f'[{i+1}/{len(group_list)}] 処理開始: {code}|{kigyo_nm}|{furiwakesaki_nm}')
+            print(f'[{i+1}/{total}] 処理開始: {code}|{kigyo_nm}|{furiwakesaki_nm}')
 
             entry = {
                 '振分先コード': code,
@@ -143,7 +165,7 @@ def create_sheets():
             entry['pw'] = pw
 
             # ── 保存ファイル名作成 & 禁止文字チェック ────────────────────
-            save_filename = create_filename(code, kigyo_nm, furiwakesaki_nm)
+            save_filename = create_filename_anken(code, kigyo_nm, furiwakesaki_nm)
             rep_filename  = sanitize_filename(save_filename)
             if rep_filename != save_filename:
                 save_filename = rep_filename
@@ -160,6 +182,7 @@ def create_sheets():
                 continue
 
             # ── Excel書き込み ────────────────────────────────────────────
+
             ws.range('D2').value = code
             ws.range('D3').value = create_name(kigyo_nm, furiwakesaki_nm)
 
@@ -170,30 +193,38 @@ def create_sheets():
             last_row = ws.used_range.last_cell.row
 
             # 空列(メモ欄)挿入
-            start_col, end_col = config['案件管理シート']['空列範囲'].split(':')
-            ws.range(f'{start_col}9:{end_col}{last_row}').insert(shift='right')
+            empty_start_col, empty_end_col = config['案件管理シート']['空列範囲'].split(':')
+            ws.range(f'{empty_start_col}9:{empty_end_col}{last_row}').insert(shift='right')
             
             # 空列挿入でズレた分の右端を削除
-            last_col = config['案件管理シート']['全体範囲'].split(':')[1]
-            del_col  = get_column_letter(column_index_from_string(last_col) + 1)
+            all_start_col, all_end_col = config['案件管理シート']['全体範囲'].split(':')
+            del_col  = get_column_letter(column_index_from_string(all_end_col) + 1)
             ws.range(f'{del_col}9:AZ{last_row}').delete(shift='left')
-
+            
+            # 書式を設定
+            ws.range(f'{all_start_col}9:{all_end_col}{9 + rows - 1}').api.Orientation = 0               # 0度（横書き）
+            
             # CL入力列のセルロックを解除
             editable_left, editable_right = config['案件管理シート']['入力範囲'].split(':')
+            # print(f'enabled area: {editable_left}9:{editable_right}{9 + rows - 1}')
             ws.range(f'{editable_left}9:{editable_right}{9 + rows - 1}').api.Locked = False
-
+            
             ws.api.Protect(
                 Password=config['案件管理シート']['保護パスワード'],
                 AllowFiltering=True,
                 AllowFormattingColumns=True,
-                AllowFormattingRows=True
+                AllowFormattingRows=True,
             )
+            ws.api.EnableOutlining = True # +/-操作可能に
 
-            # SaveAs でファイルを書き出した後、wb は「別名で開いている状態」になる。
-            # 次ループでテンプレートとして再利用するため SaveAs 後に閉じ、
-            # テンプレートを再度開いて wb/ws を更新する。
-            wb.api.SaveAs(str(save_filepath), Password=pw)
+            app.display_alerts = False    # ★ SaveAs直前に毎回再セット（再起動後リセット対策）
+            wb.api.SaveAs(str(save_filepath), FileFormat=51, Password=pw)  # ★ FileFormat=51(xlsx)で互換性ダイアログ抑制
             wb.close()
+            # ★ COMリソースを明示解放してからテンプレートを再オープン
+            wb = None
+            ws = None
+            gc.collect()
+            pythoncom.CoFreeUnusedLibraries()
             wb = app.books.open(template_filepath)
             ws = wb.sheets[target_sheet_name]
 
@@ -209,8 +240,7 @@ def create_sheets():
                 pass
             app.quit()
 
-    print(f' ✅ 作成完了: {ok_count} | 作成済み: {exist_count} | 作成エラー: {err_count} | 合計: {len(group_list)}')
-
+    print(f' ✅ 作成完了: {ok_count} | 作成済み: {exist_count} | 作成エラー: {err_count} | 合計: {total}')
     result_df = pd.DataFrame(result)
     result_df.index = range(1, len(result_df) + 1)
     base_name     = f'{YYYYMMDD}_案件管理シート作成結果メモ'
@@ -240,7 +270,7 @@ def check_sheets_at_creation():
     target_folder = selected_working_folder / '02_作成済み案件管理シート'
     result_folder = selected_working_folder / '99_処理結果'
 
-    target_files = [f for f in target_folder.glob("*.xlsx") if not f.name.startswith('~$')]
+    target_files = [f for f in target_folder.glob('*.xlsx') if not f.name.startswith('~$')]
     target_files_len = len(target_files)
 
     if target_files_len == 0:
@@ -261,9 +291,9 @@ def check_sheets_at_creation():
         res = checker.get_info()
 
         report = {
-            '振分先コード': checker.furiwakesaki_code or "",
-            '企業名': checker.kigyo_name or "",
-            '振分先名': checker.furiwakesaki_name or "",
+            '振分先コード': checker.furiwakesaki_code or '',
+            '企業名': checker.kigyo_name or '',
+            '振分先名': checker.furiwakesaki_name or '',
             'ファイル名': str(file.name),
             'トータルの不備結果': '',
             'PWチェック': '',
@@ -318,7 +348,6 @@ def check_sheets_at_creation():
                 continue
             case None:        
                 report['PWチェック'] = 'OK'
-    
 
 
         report['データ貼り付け、セルロック位置チェック'] = checker.check_cell_protection() and checker.check_input_range()
@@ -332,7 +361,7 @@ def check_sheets_at_creation():
             checker.check_is_date('③初回来場日​'),
             checker.check_is_date('④契約予定日​'),
         ])
-        report['CL入力欄文字列型チェック'] = checker.check_is_num()
+        report['CL入力欄文字列型チェック'] = checker.check_is_num('⑥重複\n※更新先の依頼番号を入力')
         
         # トータルで
         check_targets = [
@@ -354,16 +383,16 @@ def check_sheets_at_creation():
     print(f' ✅ チェック完了: {ok_count} | チェック不可: {ng_count} | 合計: {len(target_files)}')
 
     print(f'作成チェック結果を出力します...')
-    
+
     # 結果を出力
     result_df = pd.DataFrame(result)
-    result_df = result_df.replace([True, np.True_], 'OK').replace([False, np.False_], 'NG')
-
+    result_df = result_df.map(lambda x: 'OK' if x is True or x is np.True_ else ('NG' if x is False or x is np.False_ else x))    
+    
     # チェック結果テンプレート
     template_filepath = Path(config['ファイルパス']['チェック結果FMT'])
 
     # 保存ファイル名(すでにある場合はリネームして新規で作成)
-    base_name = f"{YYYYMMDD}_案件管理シート作成チェック結果"
+    base_name = f'{YYYYMMDD}_案件管理シート作成チェック結果'
     save_filepath = serial_filepath(result_folder, base_name, '.xlsx')
     shutil.copy(template_filepath, save_filepath)
 
@@ -372,8 +401,24 @@ def check_sheets_at_creation():
         wb = xw.Book((save_filepath))
         ws = wb.sheets[0]  # 1番左のシートを指定
         
-        ws.range("A:A").number_format = '@'
+        ws.range('A:A').number_format = '@'
         ws.range('A10').options(index=False, header=False).value = result_df
+        
+        # 行と列のインデックスでループしNGセルに色を付ける
+        rows, cols = result_df.shape
+        data_area = ws.range('A10').resize(rows, cols)
+        filter_area = ws.range('A9').resize(rows + 1, cols)
+        all_values = data_area.options(ndim=2).value
+
+        for r, row_values in enumerate(all_values):
+            for c, val in enumerate(row_values):
+                if val == 'NG':
+                    # 起点(A9)から相対的な位置を指定して色を塗る
+                    data_area[r, c].color = (255, 255, 0)
+        
+        # フィルタ
+        ws.api.AutoFilterMode = False 
+        filter_area.api.AutoFilter(Field=1)
 
         ws.range('C3').value = 'OK' if count_dict_len == target_files_len else 'NG'
         ws.range('C4').value = str(target_files_len)
@@ -415,7 +460,7 @@ def create_send_list():
     template_filepath = config['ファイルパス']['送付対象クライアント一覧FMT']
 
     # 保存ファイル名(すでにある場合はリネームして新規で作成)
-    base_name = f"{YYYYMMDD}_案件管理シート送付対象クライアント一覧"
+    base_name = f'{YYYYMMDD}_案件管理シート送付対象クライアント一覧'
     save_filepath = serial_filepath(result_folder, base_name, '.xlsx')
     shutil.copy(template_filepath, save_filepath)
 
@@ -424,8 +469,8 @@ def create_send_list():
         wb = xw.Book((save_filepath))
         ws = wb.sheets[0]  # 1番左のシートを指定
         
-        ws.range("A:D").number_format = '@'
-        ws.range("A2").options(index=False, header=False).value = ok_df
+        ws.range('A:D').number_format = '@'
+        ws.range('A2').options(index=False, header=False).value = ok_df
         
         # 保存
         wb.save()
@@ -451,7 +496,7 @@ def create_send_jisseki():
     ok_code_list = result_df[result_df['トータルの不備結果'] == 'OK']['振分先コード'].tolist()
 
     # csvファイルの取得
-    sojushin_df = selectfile_to_df("案件管理シート送受信実績一覧.csv", BASE_FOLDER)
+    sojushin_df = selectfile_to_df('案件管理シート送受信実績一覧.csv', BASE_FOLDER)
     existing_codes = set(sojushin_df['振分先コード'])
     # 日付データの整形
     sojushin_df['案件管理シート送信実施日'] = pd.to_datetime(sojushin_df['案件管理シート送信実施日']).dt.strftime('%Y/%m/%d')
@@ -473,7 +518,7 @@ def create_send_jisseki():
                 '案件管理シート履歴': '',
             }
         
-        if not code in existing_codes:
+        if code not in existing_codes:
             row['レコードの開始行'] = '*'
 
         add_rows.append(row)
@@ -483,7 +528,9 @@ def create_send_jisseki():
     output_df = pd.concat([sojushin_df, add_df], ignore_index=True)
 
     # 並べ替え
-    output_df = output_df.sort_values(by=['振分先コード', '案件管理シート送信実施日'])
+    output_df['_sort_key'] = output_df['レコードの開始行'].apply(lambda x: 0 if x == '*' else 1)
+    output_df = output_df.sort_values(by=['振分先コード', '_sort_key', '案件管理シート送信実施日'])
+    output_df = output_df.drop(columns=['_sort_key'])
 
 
     # 結果の出力
@@ -517,7 +564,6 @@ if __name__ == '__main__':
         # print(f'[{datetime.datetime.now() :%Y-%m-%d %H:%M:%S}] 送付対象クライアント一覧作成開始')
         # create_send_list()
         # print(f'[{datetime.datetime.now() :%Y-%m-%d %H:%M:%S}] 送付対象クライアント一覧作成終了')
-
         
         # # ==== 案件管理シートの送信実績取込用ファイル作成 ====
         # print(f'[{datetime.datetime.now() :%Y-%m-%d %H:%M:%S}] 案件管理シートの送信実績取込用ファイル作成開始')
@@ -535,4 +581,4 @@ if __name__ == '__main__':
         err_name = type(e).__name__
         err_msg = str(e)
         err_detail = traceback.format_exc()
-        print(f"\n⚠️ エラーが発生しました \nエラー名: {err_name}\n詳細: {err_msg}\n{err_detail}")
+        print(f'\n⚠️ エラーが発生しました \nエラー名: {err_name}\n詳細: {err_msg}\n{err_detail}')
